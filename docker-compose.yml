@@ -1,0 +1,15 @@
+services:
+  twitch-watcher:
+    build: .
+    container_name: twitch-watcher
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Live-reload channel config without rebuilding the image
+      - ./config.json:/app/config.json:ro
+      # Persist SQLite state across restarts
+      - twitch-watcher-data:/app/data
+
+volumes:
+  twitch-watcher-data:

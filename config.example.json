@@ -1,0 +1,9 @@
+{
+  "channels": [
+    {
+      "name": "elfo",
+      "notifyByChat": true,
+      "chatMessage": "Uma rucula foi detectada @{streamer}"
+    }
+  ]
+}
