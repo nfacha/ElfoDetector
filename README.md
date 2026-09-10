@@ -33,7 +33,15 @@ Staff-less EventSub subscriptions like `channel.update` need no OAuth scopes, bu
 - Or twitchtokengenerator.com with your custom client ID
 - If you want chat messages: include the `chat:read` + `chat:edit` scopes
 
-The bot validates the token against `id.twitch.tv/oauth2/validate` at startup and will refuse to start with a clear error if it's malformed, expired, or issued by the wrong app.
+### Renewal (recommended)
+
+User access tokens expire (anywhere from ~4 hours to 60 days depending on the issuer). To avoid manual token churn, use the auto-renewing flow:
+
+1. Set `TWITCH_CLIENT_ID` + `TWITCH_CLIENT_SECRET` and both `TWITCH_ACCESS_TOKEN` + `TWITCH_REFRESH_TOKEN` in `.env`
+2. On first start the bot seeds the refresh provider with those and persists every **rotated** token to `data/tokens.json` (`TOKEN_STORE_FILE`), so restarts always use the freshest token
+3. Within the running process, tokens are refreshed automatically before expiry — no downtime
+
+If only `TWITCH_ACCESS_TOKEN` is set (no refresh token), the bot runs in static mode and logs a warning that the token won't renew itself.
 
 ## Setup
 
@@ -47,12 +55,13 @@ cp config.example.json config.json   # choose channels
 
 ```ini
 TWITCH_CLIENT_ID=your_client_id
-TWITCH_CLIENT_SECRET=your_client_secret   # optional (refresh flow)
+TWITCH_CLIENT_SECRET=your_client_secret   # required for auto-renewal
 TWITCH_ACCESS_TOKEN=your_user_access_token
+TWITCH_REFRESH_TOKEN=your_user_refresh_token  # enables auto-renewal (with the secret)
 TWITCH_BOT_USERNAME=your_bot              # only needed for chat messages
 ```
 
-`CHANNELS_CONFIG` and `DB_FILE` are optional and default to `config.json` and `data/watcher.db`.
+`CHANNELS_CONFIG`, `DB_FILE` and `TOKEN_STORE_FILE` are optional (defaults: `config.json`, `data/watcher.db`, `data/tokens.json`).
 
 ### `config.json`
 

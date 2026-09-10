@@ -1,7 +1,13 @@
 import 'dotenv/config';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { type AuthProvider, RefreshingAuthProvider, StaticAuthProvider } from '@twurple/auth';
+import {
+  type AccessToken,
+  type AuthProvider,
+  RefreshingAuthProvider,
+  StaticAuthProvider,
+} from '@twurple/auth';
 import { ApiClient } from '@twurple/api';
 
 export interface ChannelConfig {
@@ -40,6 +46,14 @@ interface TokenValidation {
   expires_in: number;
 }
 
+class InvalidAccessTokenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidAccessTokenError';
+  }
+}
+
+/** Throws InvalidAccessTokenError for expired/invalid tokens, other errors otherwise. */
 async function validateAccessToken(
   clientId: string,
   accessToken: string,
@@ -49,8 +63,13 @@ async function validateAccessToken(
   });
   if (!response.ok) {
     const body = await response.text();
+    if (response.status === 401) {
+      throw new InvalidAccessTokenError(
+        `Access token invalid or expired (validate returned HTTP 401): ${body}`,
+      );
+    }
     throw new Error(
-      `Access token invalid or expired (validate returned HTTP ${response.status}): ${body}`,
+      `Token validation failed (validate returned HTTP ${response.status}): ${body}`,
     );
   }
   const validation = (await response.json()) as TokenValidation;
@@ -64,37 +83,117 @@ async function validateAccessToken(
   return validation;
 }
 
+interface StoredToken {
+  userId: string;
+  token: AccessToken;
+}
+
+/** Initial token shape accepted by RefreshingAuthProvider#addUserForToken. */
+interface SeedToken {
+  accessToken?: string;
+  refreshToken: string | null;
+  expiresIn: number | null;
+  obtainmentTimestamp: number;
+  scope?: string[];
+}
+
+function createTokenStore(storeFile: string) {
+  return {
+    read(): StoredToken | null {
+      try {
+        const parsed = JSON.parse(readFileSync(storeFile, 'utf8')) as StoredToken;
+        if (parsed?.userId && parsed?.token?.refreshToken) {
+          return parsed;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+    write(userId: string, token: AccessToken): void {
+      mkdirSync(path.dirname(storeFile), { recursive: true });
+      writeFileSync(storeFile, JSON.stringify({ userId, token }, null, 2), 'utf8');
+    },
+  };
+}
+
+/**
+ * Builds the initial token for the RefreshingAuthProvider from env values.
+ *
+ * If the provided access token is still valid it is used as-is; otherwise the
+ * provider is seeded with `expiresIn: 0` so it immediately refreshes.
+ */
+async function buildSeedToken(
+  clientId: string,
+  accessToken: string | undefined,
+  refreshToken: string,
+): Promise<SeedToken> {
+  if (accessToken) {
+    try {
+      const validation = await validateAccessToken(clientId, accessToken);
+      if (validation.expires_in > 300) {
+        return {
+          accessToken,
+          refreshToken,
+          expiresIn: validation.expires_in,
+          obtainmentTimestamp: Date.now(),
+          scope: validation.scopes,
+        };
+      }
+    } catch (error) {
+      if (!(error instanceof InvalidAccessTokenError)) {
+        throw error;
+      }
+      console.log('[auth] Access token expired; will refresh using TWITCH_REFRESH_TOKEN');
+    }
+  }
+  return { accessToken, refreshToken, expiresIn: 0, obtainmentTimestamp: Date.now() };
+}
+
 async function createAuthProvider(): Promise<AuthProvider> {
   const clientId = requireEnv('TWITCH_CLIENT_ID');
   const clientSecret = process.env.TWITCH_CLIENT_SECRET;
   const accessToken = process.env.TWITCH_ACCESS_TOKEN;
   const refreshToken = process.env.TWITCH_REFRESH_TOKEN;
 
-  if (accessToken) {
-    const validation = await validateAccessToken(clientId, accessToken);
-    const provider = new StaticAuthProvider(clientId, accessToken, validation.scopes);
-    console.log(
-      `[auth] Token validated for user "${validation.login}" (${validation.user_id})`,
+  const renewalConfigured = Boolean(clientSecret && refreshToken);
+  if (!renewalConfigured && !accessToken) {
+    throw new Error(
+      'No credentials found. Set TWITCH_ACCESS_TOKEN, or TWITCH_ACCESS_TOKEN + TWITCH_REFRESH_TOKEN + TWITCH_CLIENT_SECRET for automatic renewal.',
     );
-    return provider;
   }
 
-  if (clientSecret && refreshToken) {
-    const provider = new RefreshingAuthProvider({ clientId, clientSecret });
-    await provider.addUserForToken({
-      refreshToken,
-      expiresIn: 0,
-      obtainmentTimestamp: Date.now(),
-    });
-    provider.onRefresh((userId, token) => {
-      console.log(`[auth] Refreshed access token for user ${userId}`);
-    });
-    return provider;
+  if (!renewalConfigured) {
+    const validation = await validateAccessToken(clientId, accessToken!);
+    console.log(`[auth] Using static token for "${validation.login}" (${validation.user_id})`);
+    console.log(
+      '[auth] WARNING: no TWITCH_REFRESH_TOKEN + TWITCH_CLIENT_SECRET set - the token will NOT renew itself and will stop working when it expires.',
+    );
+    return new StaticAuthProvider(clientId, accessToken!, validation.scopes);
   }
 
-  throw new Error(
-    'Provide either TWITCH_ACCESS_TOKEN, or TWITCH_CLIENT_SECRET together with TWITCH_REFRESH_TOKEN.',
+  const tokenStoreFile = path.resolve(
+    process.env.TOKEN_STORE_FILE ?? 'data/tokens.json',
   );
+  const tokenStore = createTokenStore(tokenStoreFile);
+  const provider = new RefreshingAuthProvider({ clientId, clientSecret: clientSecret! });
+  provider.onRefresh((userId, token) => {
+    tokenStore.write(userId, token);
+    console.log(`[auth] Refreshed token for user ${userId} (persisted to ${tokenStoreFile})`);
+  });
+
+  const stored = tokenStore.read();
+  let userId: string;
+  if (stored) {
+    userId = await provider.addUserForToken(stored.token, ['chat']);
+    console.log(`[auth] Loaded saved token for user ${userId} (auto-renew enabled)`);
+  } else {
+    const seedToken = await buildSeedToken(clientId, accessToken, refreshToken!);
+    userId = await provider.addUserForToken(seedToken, ['chat']);
+    console.log(`[auth] Token auto-renew enabled for user ${userId}`);
+  }
+  void userId;
+  return provider;
 }
 
 async function loadChannelConfigs(): Promise<ChannelConfig[]> {
