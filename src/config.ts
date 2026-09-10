@@ -4,11 +4,14 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   type AccessToken,
+  type AccessTokenMaybeWithUserId,
+  type AccessTokenWithUserId,
   type AuthProvider,
   RefreshingAuthProvider,
   StaticAuthProvider,
 } from '@twurple/auth';
 import { ApiClient } from '@twurple/api';
+import type { UserIdResolvable } from '@twurple/common';
 
 export interface ChannelConfig {
   name: string;
@@ -150,6 +153,56 @@ async function buildSeedToken(
   return { accessToken, refreshToken, expiresIn: 0, obtainmentTimestamp: Date.now() };
 }
 
+/**
+ * Wraps a per-user AuthProvider so that every token request is routed to a
+ * single "owner" user.
+ *
+ * Without this, EventSub subscriptions for a watched channel that is not the
+ * token owner fail, because the WebSocket listener requests a token in the
+ * context of the watched broadcaster's user ID while the provider only holds
+ * a token for the owner. This wrapper lets one user token watch any channel.
+ *
+ * Refreshes still go through the wrapped RefreshingAuthProvider.
+ */
+class SingleUserAuthProvider implements AuthProvider {
+  readonly clientId: string;
+  readonly authorizationType?: string;
+
+  constructor(
+    private readonly inner: RefreshingAuthProvider,
+    private readonly ownerUserId: string,
+  ) {
+    this.clientId = inner.clientId;
+  }
+
+  getCurrentScopesForUser(): string[] {
+    return this.inner.getCurrentScopesForUser(this.ownerUserId);
+  }
+
+  async getAccessTokenForUser(
+    _user: UserIdResolvable,
+    ...scopeSets: Array<string[] | undefined>
+  ): Promise<AccessTokenWithUserId | null> {
+    return this.inner.getAccessTokenForUser(this.ownerUserId, ...scopeSets);
+  }
+
+  getAccessTokenForIntent = (
+    intent: string,
+    ...scopeSets: Array<string[] | undefined>
+  ) => this.inner.getAccessTokenForIntent(intent, ...scopeSets);
+
+  getAnyAccessToken = (): Promise<AccessTokenMaybeWithUserId> =>
+    this.inner.getAnyAccessToken(this.ownerUserId);
+
+  getAppAccessToken = (forceNew?: boolean) => this.inner.getAppAccessToken(forceNew);
+
+  refreshAccessTokenForUser = (): Promise<AccessTokenWithUserId> =>
+    this.inner.refreshAccessTokenForUser(this.ownerUserId);
+
+  refreshAccessTokenForIntent = (intent: string): Promise<AccessTokenWithUserId> =>
+    this.inner.refreshAccessTokenForIntent(intent);
+}
+
 async function createAuthProvider(): Promise<AuthProvider> {
   const clientId = requireEnv('TWITCH_CLIENT_ID');
   const clientSecret = process.env.TWITCH_CLIENT_SECRET;
@@ -192,8 +245,7 @@ async function createAuthProvider(): Promise<AuthProvider> {
     userId = await provider.addUserForToken(seedToken, ['chat']);
     console.log(`[auth] Token auto-renew enabled for user ${userId}`);
   }
-  void userId;
-  return provider;
+  return new SingleUserAuthProvider(provider, userId);
 }
 
 async function loadChannelConfigs(): Promise<ChannelConfig[]> {
