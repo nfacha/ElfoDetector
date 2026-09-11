@@ -3,7 +3,11 @@ import { ChatClient } from '@twurple/chat';
 import { type ResolvedChannel } from './config.js';
 import { log } from './logger.js';
 
-const DEFAULT_CHAT_MESSAGE = 'Hey @{streamer}, getting ready to stream?';
+const DEFAULT_CHAT_MESSAGES = [
+  'Hey @{streamer}, getting ready to stream?',
+  'Oh look who just went live — @{streamer}! 👀',
+  'LFG @{streamer} is streaming! 🎮',
+];
 
 export interface ChatVars {
   streamer: string;
@@ -18,7 +22,7 @@ function renderTemplate(template: string, vars: ChatVars): string {
 export class ChatManager {
   private client: ChatClient | null = null;
   private connected = false;
-  private templates = new Map<string, string>();
+  private templates = new Map<string, string[]>();
   private pending: Array<{ channel: string; message: string }> = [];
   private stopping = false;
 
@@ -34,7 +38,11 @@ export class ChatManager {
     this.templates = new Map(
       chatChannels.map((channel) => [
         channel.name.toLowerCase(),
-        channel.chatMessage ?? DEFAULT_CHAT_MESSAGE,
+        channel.chatMessage
+          ? Array.isArray(channel.chatMessage)
+            ? channel.chatMessage
+            : [channel.chatMessage]
+          : DEFAULT_CHAT_MESSAGES,
       ]),
     );
     this.client = new ChatClient({
@@ -62,10 +70,11 @@ export class ChatManager {
   }
 
   send(channelName: string, vars: ChatVars): void {
-    const template = this.templates.get(channelName.toLowerCase());
-    if (!template) {
+    const templates = this.templates.get(channelName.toLowerCase());
+    if (!templates || templates.length === 0) {
       return;
     }
+    const template = templates[Math.floor(Math.random() * templates.length)];
     const message = renderTemplate(template, vars);
     const channel = channelName.toLowerCase();
 

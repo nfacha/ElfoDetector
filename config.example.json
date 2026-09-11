@@ -3,7 +3,12 @@
     {
       "name": "elfo",
       "notifyByChat": true,
-      "chatMessage": "Uma rucula foi detectada @{streamer}"
+      "chatMessage": [
+        "Uma rucula foi detectada @{streamer}",
+        "Opa @{streamer} em campo! 👀",
+        "Detectado! @{streamer} ao vivo 🎮",
+        "Nao me passes ao lado @{streamer}!"
+      ]
     }
   ]
 }

@@ -16,7 +16,7 @@ import type { UserIdResolvable } from '@twurple/common';
 export interface ChannelConfig {
   name: string;
   notifyByChat?: boolean;
-  chatMessage?: string;
+  chatMessage?: string | string[];
 }
 
 export interface ResolvedChannel extends ChannelConfig {
